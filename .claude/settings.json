@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(TZ=Asia/Jerusalem node --input-type=module --eval ' *)",
+      "Bash(curl -s \"https://jobs.techaviv.com/jobs/\")"
+    ]
+  }
+}
