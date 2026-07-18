@@ -15,6 +15,7 @@ const SOURCES = [
   { url: 'https://www.aleph.vc/companies',            name: 'Aleph VC',           type: 'portfolio-browser' },
   { url: 'https://jobs.techaviv.com',                  name: 'TechAviv',           type: 'consider', boardId: 'techaviv' },
   { url: 'https://www.pitango.com/portfolio/',         name: 'Pitango',            type: 'pitango' },
+  { url: 'https://www.signalfire.com/portfolio',       name: 'SignalFire',         type: 'portfolio-links' },
 ];
 
 // ── Filters ────────────────────────────────────────────────────────────────
@@ -134,7 +135,7 @@ const ISRAEL_LOCATIONS = [
   'beit shemesh', 'or yehuda', 'nes ziona',
 ];
 
-function isIsraeliLocation(location) {
+export function isIsraeliLocation(location) {
   if (!location) return false;
   const l = location.toLowerCase();
   return ISRAEL_LOCATIONS.some(city => l.includes(city));
@@ -631,9 +632,9 @@ async function scrapePortfolio(source) {
 // Each slug page has the company's external website URL.
 // We fetch those via axios (Webflow is SSR), extract the external URL, then ATS-detect.
 
-async function resolveAlephCompanyUrl(alephPageUrl, baseHost) {
+async function resolveExternalCompanyUrl(pageUrl, baseHost) {
   try {
-    const { data: html } = await httpGet(alephPageUrl, { timeout: 10000 });
+    const { data: html } = await httpGet(pageUrl, { timeout: 10000 });
     const $ = cheerio.load(html);
     // Find first external link that is not social/aleph
     const SOCIAL = /linkedin|twitter|x\.com|instagram|facebook|youtube|medium/i;
@@ -695,7 +696,7 @@ async function scrapePortfolioBrowser(source) {
   for (let i = 0; i < slugLinks.length; i += RESOLVE_BATCH) {
     const batch = slugLinks.slice(i, i + RESOLVE_BATCH);
     const resolved = await Promise.allSettled(
-      batch.map(s => resolveAlephCompanyUrl(s.alephUrl, baseHost).then(url => url ? { name: s.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), url } : null))
+      batch.map(s => resolveExternalCompanyUrl(s.alephUrl, baseHost).then(url => url ? { name: s.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), url } : null))
     );
     for (const r of resolved) {
       if (r.status === 'fulfilled' && r.value) companies.push(r.value);
@@ -713,6 +714,62 @@ async function scrapePortfolioBrowser(source) {
       if (r.status === 'fulfilled') allJobs.push(...r.value);
     }
     if (i + BATCH < companies.length) await sleep(200);
+  }
+  return allJobs;
+}
+
+// ── Portfolio scraper via internal links (SignalFire — static Webflow) ────
+// Same shape as Aleph VC (listing page → internal /portfolio/{slug} pages →
+// external company site) but the listing and slug pages are server-rendered,
+// so axios is enough — no Puppeteer needed.
+
+async function scrapePortfolioLinks(source) {
+  const { data: html } = await httpGet(source.url);
+  const baseHost = new URL(source.url).hostname;
+  const $ = cheerio.load(html);
+  const listingPath = new URL(source.url).pathname.replace(/\/$/, '');
+
+  const slugLinks = [];
+  const seen = new Set();
+  $('a[href]').each((_, el) => {
+    const href = $(el).attr('href') || '';
+    try {
+      const u = new URL(href, source.url);
+      if (u.hostname !== baseHost) return;
+      const parts = u.pathname.replace(/\/$/, '').split('/').filter(Boolean);
+      const listingParts = listingPath.split('/').filter(Boolean);
+      if (parts.length === listingParts.length + 1 && u.pathname.startsWith(listingPath + '/') && !seen.has(parts[parts.length - 1])) {
+        seen.add(parts[parts.length - 1]);
+        slugLinks.push({ slug: parts[parts.length - 1], pageUrl: u.href });
+      }
+    } catch {}
+  });
+
+  console.log(`[jobFetcher] ${source.name}: found ${slugLinks.length} portfolio companies`);
+  if (slugLinks.length === 0) return [];
+
+  const companies = [];
+  const RESOLVE_BATCH = 10;
+  for (let i = 0; i < slugLinks.length; i += RESOLVE_BATCH) {
+    const batch = slugLinks.slice(i, i + RESOLVE_BATCH);
+    const resolved = await Promise.allSettled(
+      batch.map(s => resolveExternalCompanyUrl(s.pageUrl, baseHost).then(url => url ? { name: s.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), url } : null))
+    );
+    for (const r of resolved) {
+      if (r.status === 'fulfilled' && r.value) companies.push(r.value);
+    }
+  }
+
+  console.log(`[jobFetcher] ${source.name}: resolved ${companies.length} company websites`);
+
+  const allJobs = [];
+  const BATCH = 12;
+  for (let i = 0; i < companies.length; i += BATCH) {
+    const batch = companies.slice(i, i + BATCH);
+    const results = await Promise.allSettled(batch.map(c => fetchCompanyJobs(c.url, c.name)));
+    for (const r of results) {
+      if (r.status === 'fulfilled') allJobs.push(...r.value);
+    }
   }
   return allJobs;
 }
@@ -825,6 +882,7 @@ export async function fetchAllJobs({ sourceFilter } = {}) {
     browser:             scrapeWithBrowser,
     portfolio:           scrapePortfolio,
     'portfolio-browser': scrapePortfolioBrowser,
+    'portfolio-links':   scrapePortfolioLinks,
     pitango:             scrapePitango,
   };
 

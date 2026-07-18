@@ -15,6 +15,7 @@ Scrape one specific data source and send its jobs to Telegram immediately.
 | Entree Capital | Portfolio scraper |
 | Aleph VC | Portfolio browser scraper |
 | TechAviv | Consider platform |
+| SignalFire | Portfolio scraper (static links) |
 
 ## Steps
 
